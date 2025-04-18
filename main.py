@@ -305,13 +305,15 @@ def calculate_percentages_and_distribution(data, distribution_amount=None):
     # Calculate total value
     total_value = calculate_total_value(data)
     
-    # Calculate percentages and distribution amounts
+    # First pass: calculate percentages and store raw values
+    value_floats = []
     for item in data:
         if item.get('value'):
             try:
                 # Convert value string to float
                 value_str = item['value'].replace('.', '').replace(',', '.')
                 value_float = float(value_str)
+                value_floats.append(value_float)
                 
                 # Calculate percentage
                 percentage = (value_float / total_value) * 100
@@ -319,18 +321,90 @@ def calculate_percentages_and_distribution(data, distribution_amount=None):
                 item['percentage'] = format_brazilian_number(percentage, 6)
                 item['percentage_float'] = percentage
                 
-                # Calculate distribution amount if provided
+                # Initialize distribution fields
                 if distribution_amount is not None:
-                    distribution = (percentage / 100) * distribution_amount
-                    # Format total in Brazilian currency format
-                    item['total'] = format_brazilian_number(distribution, 2)
-                    item['total_float'] = distribution
+                    item['total'] = "0,00"
+                    item['total_float'] = 0.0
             except (ValueError, TypeError, ZeroDivisionError):
+                value_floats.append(0.0)
                 item['percentage'] = "0,000000"
                 item['percentage_float'] = 0.0
                 if distribution_amount is not None:
                     item['total'] = "0,00"
                     item['total_float'] = 0.0
+        else:
+            value_floats.append(0.0)
+            item['percentage'] = "0,000000"
+            item['percentage_float'] = 0.0
+            if distribution_amount is not None:
+                item['total'] = "0,00"
+                item['total_float'] = 0.0
+    
+    # Second pass: calculate distribution amounts directly from values if provided
+    if distribution_amount is not None and total_value > 0:
+        # Use a completely different approach to ensure exact distribution
+        # Calculate the amounts in cents (integer) to avoid floating point issues
+        
+        # Convert distribution amount to cents (integer)
+        distribution_cents = int(round(distribution_amount * 100))
+        total_cents_distributed = 0
+        
+        # Calculate proportions for each item
+        proportions = []
+        for value_float in value_floats:
+            proportion = value_float / total_value if total_value > 0 else 0
+            proportions.append(proportion)
+        
+        # Distribute cents based on proportions
+        distributions_cents = []
+        
+        # First pass: allocate integer cents based on proportions
+        for i, proportion in enumerate(proportions):
+            if i == len(proportions) - 1:
+                # Last item gets remaining cents
+                item_cents = distribution_cents - total_cents_distributed
+            else:
+                # Calculate cents for this item and round down
+                item_cents = int(proportion * distribution_cents)
+            
+            distributions_cents.append(item_cents)
+            total_cents_distributed += item_cents
+        
+        # Second pass: distribute any remaining cents to items with highest fractional parts
+        if total_cents_distributed < distribution_cents:
+            # Calculate fractional parts that were truncated
+            fractional_parts = []
+            for i, proportion in enumerate(proportions):
+                exact_cents = proportion * distribution_cents
+                fractional = exact_cents - int(exact_cents)
+                fractional_parts.append((fractional, i))
+            
+            # Sort by fractional part (descending)
+            fractional_parts.sort(reverse=True)
+            
+            # Distribute remaining cents to items with highest fractional parts
+            remaining_cents = distribution_cents - total_cents_distributed
+            for i in range(remaining_cents):
+                if i < len(fractional_parts):
+                    idx = fractional_parts[i][1]  # Get the index of the item
+                    distributions_cents[idx] += 1
+        
+        # Convert cents back to float and update items
+        idx = 0
+        for i, item in enumerate(data):
+            if idx < len(distributions_cents):
+                # Convert cents back to float with exactly 2 decimal places
+                distribution = distributions_cents[idx] / 100.0
+                
+                # Format total in Brazilian currency format
+                item['total'] = format_brazilian_number(distribution, 2)
+                item['total_float'] = distribution
+                idx += 1
+        
+        # Verify the total matches exactly
+        total_distributed = sum(item.get('total_float', 0) for item in data)
+        if abs(total_distributed - distribution_amount) > 0.001:
+            print(f"Warning: Distribution mismatch. Expected: {distribution_amount}, Got: {total_distributed}")
     
     return data
 
